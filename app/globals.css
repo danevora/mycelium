@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Theme tokens as RGB triplets. Light is the default (:root); `.dark` overrides.
+ * Anchors: accent #BDA6CE, dark base #44444E, light base #FFFAF3.
+ */
+:root {
+  color-scheme: light;
+  --canvas: 255 250 243; /* #FFFAF3 cream */
+  --sunken: 243 235 221;
+  --card: 255 255 255;
+  --cardhi: 244 236 222;
+  --edge: 231 220 203;
+  --fg: 56 50 63;
+  --muted: 111 104 120;
+  --faint: 154 144 136;
+  --onaccent: 255 250 243;
+  --lav: 138 111 166; /* deeper mauve so accent text/links read on cream */
+  --lav-light: 110 81 145;
+  --lav-dark: 95 70 124;
+  --lav-dim: 148 121 176;
+  --lav-glow: 110 81 145;
+}
+
+.dark {
+  color-scheme: dark;
+  --canvas: 68 68 78; /* #44444E slate grey */
+  --sunken: 58 58 67;
+  --card: 78 78 88;
+  --cardhi: 89 89 100;
+  --edge: 98 98 110;
+  --fg: 239 236 244;
+  --muted: 184 181 192;
+  --faint: 142 139 152;
+  --onaccent: 46 42 54;
+  --lav: 189 166 206; /* #BDA6CE */
+  --lav-light: 210 194 224;
+  --lav-dark: 168 141 192;
+  --lav-dim: 155 130 182;
+  --lav-glow: 224 214 236;
+}
+
+body {
+  @apply bg-canvas text-fg antialiased;
+  background-image: radial-gradient(
+    ellipse 80% 50% at 50% -10%,
+    rgb(var(--lav) / 0.12),
+    transparent
+  );
+  min-height: 100vh;
+}
+
+/* Rendered wiki markdown */
+.prose-wiki {
+  @apply leading-relaxed text-fg;
+}
+.prose-wiki h1 {
+  @apply mb-4 mt-2 text-3xl font-bold text-lav-light;
+}
+.prose-wiki h2 {
+  @apply mb-3 mt-8 border-b border-edge pb-1 text-2xl font-semibold text-lav-light;
+}
+.prose-wiki h3 {
+  @apply mb-2 mt-6 text-xl font-semibold text-fg;
+}
+.prose-wiki p {
+  @apply my-3;
+}
+.prose-wiki ul {
+  @apply my-3 list-disc space-y-1 pl-6;
+}
+.prose-wiki ol {
+  @apply my-3 list-decimal space-y-1 pl-6;
+}
+.prose-wiki a {
+  @apply text-lav underline decoration-lav/40 underline-offset-2 hover:text-lav-light;
+}
+.prose-wiki code {
+  @apply rounded bg-cardhi px-1.5 py-0.5 font-mono text-sm text-lav-glow;
+}
+.prose-wiki pre {
+  @apply my-4 overflow-x-auto rounded-lg border border-edge bg-sunken p-4;
+}
+.prose-wiki pre code {
+  @apply bg-transparent p-0 text-fg;
+}
+.prose-wiki blockquote {
+  @apply my-4 border-l-2 border-lav-dim pl-4 italic text-muted;
+}
+.prose-wiki table {
+  @apply my-4 w-full border-collapse text-sm;
+}
+.prose-wiki th,
+.prose-wiki td {
+  @apply border border-edge px-3 py-1.5 text-left;
+}
+
+/* Unresolved [[wikilink]] stub */
+.wikilink-stub {
+  @apply cursor-help text-faint underline decoration-dashed decoration-faint underline-offset-2;
+}
