@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ClerkProvider, SignInButton, UserButton } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
 import ThemeToggle from "@/components/ThemeToggle";
 import "./globals.css";
 
@@ -29,7 +31,8 @@ function Mark() {
   );
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const { userId } = await auth();
   const nav = [
     { href: "/", label: "Sources" },
     { href: "/graph", label: "Graph" },
@@ -37,37 +40,48 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { href: "/chat", label: "Chat" },
   ];
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
-      </head>
-      <body>
-        <header className="sticky top-0 z-10 border-b border-edge bg-canvas/80 backdrop-blur">
-          <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-            <Link href="/" className="flex items-center gap-2 text-lav">
-              <Mark />
-              <span className="text-lg font-semibold tracking-tight text-lav-light">
-                Mycelium
-              </span>
-            </Link>
-            <nav className="flex items-center gap-1 text-sm">
-              {nav.map((n) => (
-                <Link
-                  key={n.href}
-                  href={n.href}
-                  className="rounded-md px-3 py-1.5 text-muted transition hover:bg-cardhi hover:text-lav-light"
-                >
-                  {n.label}
-                </Link>
-              ))}
-            </nav>
-            <div className="ml-auto">
-              <ThemeToggle />
+    <ClerkProvider>
+      <html lang="en" className="dark" suppressHydrationWarning>
+        <head>
+          <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        </head>
+        <body>
+          <header className="sticky top-0 z-10 border-b border-edge bg-canvas/80 backdrop-blur">
+            <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
+              <Link href="/" className="flex items-center gap-2 text-lav">
+                <Mark />
+                <span className="text-lg font-semibold tracking-tight text-lav-light">
+                  Mycelium
+                </span>
+              </Link>
+              <nav className="flex items-center gap-1 text-sm">
+                {nav.map((n) => (
+                  <Link
+                    key={n.href}
+                    href={n.href}
+                    className="rounded-md px-3 py-1.5 text-muted transition hover:bg-cardhi hover:text-lav-light"
+                  >
+                    {n.label}
+                  </Link>
+                ))}
+              </nav>
+              <div className="ml-auto flex items-center gap-3">
+                <ThemeToggle />
+                {userId ? (
+                  <UserButton />
+                ) : (
+                  <SignInButton mode="modal">
+                    <button className="rounded-md bg-lav px-3 py-1.5 text-sm font-medium text-onaccent hover:bg-lav-light">
+                      Sign in
+                    </button>
+                  </SignInButton>
+                )}
+              </div>
             </div>
-          </div>
-        </header>
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
-      </body>
-    </html>
+          </header>
+          <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

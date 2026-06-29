@@ -42,14 +42,23 @@ export type Graph = { nodes: GraphNode[]; links: GraphLink[] };
 
 /** Build the force-graph payload from the current set of pages. */
 export function buildGraph(pages: WikiPage[]): Graph {
-  const bySlug = new Map(pages.map((p) => [p.slug, p]));
+  // Index/log are special pages that shouldn't clutter the graph — drop them
+  // and any edges that touch them.
+  const visible = pages.filter((p) => p.is_index === 0 && p.is_log === 0);
+  const visibleSlugs = new Set(visible.map((p) => p.slug));
+  const specialSlugs = new Set(
+    pages.filter((p) => p.is_index === 1 || p.is_log === 1).map((p) => p.slug)
+  );
+
+  const bySlug = new Map(visible.map((p) => [p.slug, p]));
   const inbound = new Map<string, number>();
   const links: GraphLink[] = [];
   const stubSlugs = new Set<string>();
 
-  for (const p of pages) {
+  for (const p of visible) {
     for (const target of parseWikilinks(p.content)) {
       if (target === p.slug) continue; // ignore self-links
+      if (specialSlugs.has(target)) continue; // skip edges into index/log
       links.push({ source: p.slug, target });
       inbound.set(target, (inbound.get(target) ?? 0) + 1);
       if (!bySlug.has(target)) stubSlugs.add(target);
@@ -57,15 +66,14 @@ export function buildGraph(pages: WikiPage[]): Graph {
   }
 
   const nodes: GraphNode[] = [];
-  for (const p of pages) {
-    const isSpecial = p.is_index === 1 || p.is_log === 1;
+  for (const p of visible) {
     nodes.push({
       id: p.slug,
       title: p.title,
       inbound: inbound.get(p.slug) ?? 0,
       isStub: false,
-      isOrphan: !isSpecial && (inbound.get(p.slug) ?? 0) === 0,
-      isSpecial,
+      isOrphan: (inbound.get(p.slug) ?? 0) === 0,
+      isSpecial: false,
       updatedAt: p.updated_at,
     });
   }

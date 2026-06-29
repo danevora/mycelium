@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import {
-  getOrCreateDefaultWiki,
+  getOrCreateUserWiki,
   getIndexPage,
   listPages,
   applyPageOperations,
@@ -8,8 +9,12 @@ import {
 } from "@/lib/db";
 import { chat } from "@/lib/ai";
 import type { WikiPage } from "@/lib/db";
+import { MAX_MESSAGE_CHARS } from "@/lib/safety";
+import { consumeChatQuota, quotaError } from "@/lib/usage";
 
 export const runtime = "nodejs";
+// Chat may edit pages via generateObject; same timeout concern as ingest.
+export const maxDuration = 60;
 
 /**
  * Naive relevance: pick pages whose slug/title shares a word with the message.
@@ -41,11 +46,19 @@ function selectRelevant(pages: WikiPage[], message: string): WikiPage[] {
 
 export async function POST(req: Request) {
   try {
-    const { message } = (await req.json()) as { message: string };
-    if (!message?.trim())
-      return NextResponse.json({ error: "Missing message" }, { status: 400 });
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const wiki = await getOrCreateDefaultWiki();
+    const raw = (await req.json()) as { message: string };
+    if (!raw.message?.trim())
+      return NextResponse.json({ error: "Missing message" }, { status: 400 });
+    const message = raw.message.slice(0, MAX_MESSAGE_CHARS);
+
+    const quota = await consumeChatQuota(userId);
+    if (!quota.allowed)
+      return NextResponse.json({ error: quotaError("chat", quota) }, { status: 429 });
+
+    const wiki = await getOrCreateUserWiki(userId);
     const [indexPage, pages] = await Promise.all([
       getIndexPage(wiki.id),
       listPages(wiki.id),

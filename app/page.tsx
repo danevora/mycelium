@@ -1,11 +1,12 @@
 import Link from "next/link";
 import AddSource from "@/components/AddSource";
-import { getOrCreateDefaultWiki, listSources, listPages } from "@/lib/db";
+import { listSources, listPages } from "@/lib/db";
+import { requireUserWiki } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const wiki = await getOrCreateDefaultWiki();
+  const wiki = await requireUserWiki();
   const [sources, pages] = await Promise.all([
     listSources(wiki.id),
     listPages(wiki.id),
