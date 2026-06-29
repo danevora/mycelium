@@ -1,10 +1,11 @@
 import ChatPanel from "@/components/ChatPanel";
-import { getOrCreateDefaultWiki, listChat, listPages } from "@/lib/db";
+import { listChat, listPages } from "@/lib/db";
+import { requireUserWiki } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function ChatPage() {
-  const wiki = await getOrCreateDefaultWiki();
+  const wiki = await requireUserWiki();
   const [history, pages] = await Promise.all([listChat(wiki.id), listPages(wiki.id)]);
 
   return (

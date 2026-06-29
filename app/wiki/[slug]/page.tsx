@@ -1,7 +1,8 @@
 import Link from "next/link";
 import MarkdownView from "@/components/MarkdownView";
 import WikiSidebar from "@/components/WikiSidebar";
-import { getOrCreateDefaultWiki, listPages, getPage } from "@/lib/db";
+import { listPages, getPage } from "@/lib/db";
+import { requireUserWiki } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export default async function WikiPageView({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const wiki = await getOrCreateDefaultWiki();
+  const wiki = await requireUserWiki();
   const [pages, page] = await Promise.all([listPages(wiki.id), getPage(wiki.id, slug)]);
 
   const items = pages.map((p) => ({

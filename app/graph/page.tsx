@@ -1,12 +1,13 @@
 import Link from "next/link";
 import GraphView from "@/components/GraphView";
-import { getOrCreateDefaultWiki, listPages } from "@/lib/db";
+import { listPages } from "@/lib/db";
+import { requireUserWiki } from "@/lib/auth";
 import { buildGraph } from "@/lib/wikilinks";
 
 export const dynamic = "force-dynamic";
 
 export default async function GraphPage() {
-  const wiki = await getOrCreateDefaultWiki();
+  const wiki = await requireUserWiki();
   const pages = await listPages(wiki.id);
   const graph = buildGraph(pages);
   const hasContent = pages.some((p) => p.is_index === 0 && p.is_log === 0);
@@ -23,7 +24,6 @@ export default async function GraphPage() {
         </div>
         <div className="flex gap-3 text-xs text-faint">
           <Legend color="rgb(var(--lav))" label="page" />
-          <Legend color="rgb(var(--lav-light))" label="index/log" />
           <Legend color="rgb(var(--lav-dim))" label="orphan" />
           <Legend color="rgb(var(--faint))" label="stub" />
         </div>

@@ -1,16 +1,20 @@
 /**
  * Data layer — the "swap seam".
  *
- * Everything here is `async` even though better-sqlite3 is synchronous, so that
- * swapping to an async Postgres driver later touches only this file. SQL is kept
- * portable (TEXT/INTEGER timestamps, `RETURNING`) so the queries barely change.
+ * Backed by Neon serverless Postgres (provisioned via Vercel's Neon integration,
+ * which injects DATABASE_URL). Everything is `async`; SQL is kept portable
+ * (TEXT/INTEGER columns, ISO-string timestamps, `RETURNING`). Per-user scoping
+ * lives on `wiki.user_id` (a Clerk user id) — one wiki per user.
+ *
+ * Table DDL lives in `lib/schema.sql` and is applied once via `npm run db:setup`
+ * (scripts/migrate.ts), not on the request path.
  */
-import Database from "better-sqlite3";
+import { Pool, type PoolClient } from "@neondatabase/serverless";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 
 export type Wiki = {
   id: string;
+  user_id: string;
   name: string;
   description: string;
   schema: string;
@@ -56,7 +60,7 @@ export type PageOperation = {
   content: string;
 };
 
-const DEFAULT_SCHEMA = `# Mycelium Wiki Conventions
+export const DEFAULT_SCHEMA = `# Mycelium Wiki Conventions
 
 You maintain a personal knowledge wiki of interlinked markdown pages.
 
@@ -72,121 +76,108 @@ Behavior:
 - When new sources contradict existing pages, note the contradiction explicitly.
 - Keep pages concise and well-structured; synthesize rather than dump raw text.`;
 
-let _db: Database.Database | null = null;
+let _pool: Pool | null = null;
 
-function db(): Database.Database {
-  if (_db) return _db;
-  const file = process.env.MYCELIUM_DB ?? path.join(process.cwd(), "mycelium.db");
-  const conn = new Database(file);
-  conn.pragma("journal_mode = WAL");
-  conn.exec(`
-    CREATE TABLE IF NOT EXISTS wiki (
-      id          TEXT PRIMARY KEY,
-      name        TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      schema      TEXT NOT NULL DEFAULT '',
-      created_at  TEXT NOT NULL,
-      updated_at  TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS wiki_page (
-      id         TEXT PRIMARY KEY,
-      wiki_id    TEXT NOT NULL,
-      title      TEXT NOT NULL,
-      slug       TEXT NOT NULL,
-      content    TEXT NOT NULL DEFAULT '',
-      is_index   INTEGER NOT NULL DEFAULT 0,
-      is_log     INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE (wiki_id, slug)
-    );
-    CREATE TABLE IF NOT EXISTS source (
-      id               TEXT PRIMARY KEY,
-      wiki_id          TEXT NOT NULL,
-      type             TEXT NOT NULL,
-      title            TEXT NOT NULL,
-      raw_content      TEXT NOT NULL DEFAULT '',
-      blob_url         TEXT,
-      ingested_at      TEXT NOT NULL,
-      page_ids_touched TEXT NOT NULL DEFAULT '[]'
-    );
-    CREATE TABLE IF NOT EXISTS chat_message (
-      id         TEXT PRIMARY KEY,
-      wiki_id    TEXT NOT NULL,
-      role       TEXT NOT NULL,
-      content    TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-  `);
-  _db = conn;
-  return conn;
+function pool(): Pool {
+  if (_pool) return _pool;
+  const connectionString = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL (or POSTGRES_URL) is not set — provision the Neon/Vercel Postgres integration.");
+  }
+  _pool = new Pool({ connectionString });
+  return _pool;
+}
+
+async function query<T>(text: string, params: unknown[] = []): Promise<T[]> {
+  const res = await pool().query(text, params);
+  return res.rows as T[];
 }
 
 const now = () => new Date().toISOString();
 
-export async function getOrCreateDefaultWiki(): Promise<Wiki> {
-  const conn = db();
-  const existing = conn
-    .prepare("SELECT * FROM wiki ORDER BY created_at ASC LIMIT 1")
-    .get() as Wiki | undefined;
-  if (existing) return existing;
+const SEED_PAGE_SQL = `INSERT INTO wiki_page
+  (id, wiki_id, title, slug, content, is_index, is_log, created_at, updated_at)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
 
-  const ts = now();
-  const wiki: Wiki = {
-    id: randomUUID(),
-    name: "My Wiki",
-    description: "An AI-maintained knowledge base.",
-    schema: DEFAULT_SCHEMA,
-    created_at: ts,
-    updated_at: ts,
-  };
-  conn
-    .prepare(
-      "INSERT INTO wiki (id, name, description, schema, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .run(wiki.id, wiki.name, wiki.description, wiki.schema, wiki.created_at, wiki.updated_at);
+/**
+ * Return the signed-in user's wiki, creating + seeding it (index/log pages) on
+ * first visit. `wiki.user_id` is UNIQUE so the `ON CONFLICT` guards two first-load
+ * requests racing each other.
+ */
+export async function getOrCreateUserWiki(userId: string): Promise<Wiki> {
+  const existing = await query<Wiki>("SELECT * FROM wiki WHERE user_id = $1 LIMIT 1", [userId]);
+  if (existing[0]) return existing[0];
 
-  // Seed the special index + log pages so the AI has something to maintain.
-  const seed = conn.prepare(
-    "INSERT INTO wiki_page (id, wiki_id, title, slug, content, is_index, is_log, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  );
-  seed.run(randomUUID(), wiki.id, "Index", "index", "# Index\n\n_No pages yet._\n", 1, 0, ts, ts);
-  seed.run(randomUUID(), wiki.id, "Log", "log", "# Log\n", 0, 1, ts, ts);
-  return wiki;
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    const ts = now();
+    const inserted = await client.query(
+      `INSERT INTO wiki (id, user_id, name, description, schema, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (user_id) DO NOTHING
+       RETURNING *`,
+      [randomUUID(), userId, "My Wiki", "An AI-maintained knowledge base.", DEFAULT_SCHEMA, ts, ts],
+    );
+
+    if (inserted.rows.length === 0) {
+      // Lost the race — another request just created it. Return that one.
+      await client.query("COMMIT");
+      const w = await query<Wiki>("SELECT * FROM wiki WHERE user_id = $1 LIMIT 1", [userId]);
+      return w[0];
+    }
+
+    const wiki = inserted.rows[0] as Wiki;
+    await client.query(SEED_PAGE_SQL, [
+      randomUUID(), wiki.id, "Index", "index", "# Index\n\n_No pages yet._\n", 1, 0, ts, ts,
+    ]);
+    await client.query(SEED_PAGE_SQL, [
+      randomUUID(), wiki.id, "Log", "log", "# Log\n", 0, 1, ts, ts,
+    ]);
+    await client.query("COMMIT");
+    return wiki;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getWiki(id: string): Promise<Wiki | undefined> {
-  return db().prepare("SELECT * FROM wiki WHERE id = ?").get(id) as Wiki | undefined;
+  return (await query<Wiki>("SELECT * FROM wiki WHERE id = $1", [id]))[0];
 }
 
 export async function updateWikiSchema(id: string, schema: string): Promise<void> {
-  db()
-    .prepare("UPDATE wiki SET schema = ?, updated_at = ? WHERE id = ?")
-    .run(schema, now(), id);
+  await query("UPDATE wiki SET schema = $1, updated_at = $2 WHERE id = $3", [schema, now(), id]);
 }
 
 export async function listPages(wikiId: string): Promise<WikiPage[]> {
-  return db()
-    .prepare("SELECT * FROM wiki_page WHERE wiki_id = ? ORDER BY title COLLATE NOCASE ASC")
-    .all(wikiId) as WikiPage[];
+  return query<WikiPage>(
+    "SELECT * FROM wiki_page WHERE wiki_id = $1 ORDER BY LOWER(title) ASC",
+    [wikiId],
+  );
 }
 
 export async function getPage(wikiId: string, slug: string): Promise<WikiPage | undefined> {
-  return db()
-    .prepare("SELECT * FROM wiki_page WHERE wiki_id = ? AND slug = ?")
-    .get(wikiId, slug) as WikiPage | undefined;
+  return (
+    await query<WikiPage>("SELECT * FROM wiki_page WHERE wiki_id = $1 AND slug = $2", [wikiId, slug])
+  )[0];
 }
 
 export async function getIndexPage(wikiId: string): Promise<WikiPage | undefined> {
-  return db()
-    .prepare("SELECT * FROM wiki_page WHERE wiki_id = ? AND is_index = 1 LIMIT 1")
-    .get(wikiId) as WikiPage | undefined;
+  return (
+    await query<WikiPage>(
+      "SELECT * FROM wiki_page WHERE wiki_id = $1 AND is_index = 1 LIMIT 1",
+      [wikiId],
+    )
+  )[0];
 }
 
 export async function getLogPage(wikiId: string): Promise<WikiPage | undefined> {
-  return db()
-    .prepare("SELECT * FROM wiki_page WHERE wiki_id = ? AND is_log = 1 LIMIT 1")
-    .get(wikiId) as WikiPage | undefined;
+  return (
+    await query<WikiPage>("SELECT * FROM wiki_page WHERE wiki_id = $1 AND is_log = 1 LIMIT 1", [wikiId])
+  )[0];
 }
 
 /**
@@ -198,36 +189,42 @@ export async function applyPageOperations(
   wikiId: string,
   ops: PageOperation[],
 ): Promise<{ created: string[]; updated: string[] }> {
-  const conn = db();
   const created: string[] = [];
   const updated: string[] = [];
-
-  const tx = conn.transaction(() => {
+  const client: PoolClient = await pool().connect();
+  try {
+    await client.query("BEGIN");
     const ts = now();
-    const find = conn.prepare("SELECT id FROM wiki_page WHERE wiki_id = ? AND slug = ?");
-    const upd = conn.prepare(
-      "UPDATE wiki_page SET title = ?, content = ?, updated_at = ? WHERE wiki_id = ? AND slug = ?",
-    );
-    const ins = conn.prepare(
-      "INSERT INTO wiki_page (id, wiki_id, title, slug, content, is_index, is_log, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    );
     for (const op of ops) {
       const slug = op.slug.trim().toLowerCase();
       if (!slug) continue;
       const isIndex = slug === "index" ? 1 : 0;
       const isLog = slug === "log" ? 1 : 0;
-      const exists = find.get(wikiId, slug) as { id: string } | undefined;
-      if (exists) {
-        upd.run(op.title, op.content, ts, wikiId, slug);
+      const exists = await client.query("SELECT id FROM wiki_page WHERE wiki_id = $1 AND slug = $2", [
+        wikiId,
+        slug,
+      ]);
+      if (exists.rows.length > 0) {
+        await client.query(
+          "UPDATE wiki_page SET title = $1, content = $2, updated_at = $3 WHERE wiki_id = $4 AND slug = $5",
+          [op.title, op.content, ts, wikiId, slug],
+        );
         updated.push(slug);
       } else {
-        ins.run(randomUUID(), wikiId, op.title, slug, op.content, isIndex, isLog, ts, ts);
+        await client.query(SEED_PAGE_SQL, [
+          randomUUID(), wikiId, op.title, slug, op.content, isIndex, isLog, ts, ts,
+        ]);
         created.push(slug);
       }
     }
-    conn.prepare("UPDATE wiki SET updated_at = ? WHERE id = ?").run(ts, wikiId);
-  });
-  tx();
+    await client.query("UPDATE wiki SET updated_at = $1 WHERE id = $2", [ts, wikiId]);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
   return { created, updated };
 }
 
@@ -239,7 +236,6 @@ export async function createSource(input: {
   blobUrl?: string | null;
   touchedSlugs: string[];
 }): Promise<Source> {
-  const conn = db();
   const src: Source = {
     id: randomUUID(),
     wiki_id: input.wikiId,
@@ -250,11 +246,9 @@ export async function createSource(input: {
     ingested_at: now(),
     page_ids_touched: JSON.stringify(input.touchedSlugs),
   };
-  conn
-    .prepare(
-      "INSERT INTO source (id, wiki_id, type, title, raw_content, blob_url, ingested_at, page_ids_touched) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .run(
+  await query(
+    "INSERT INTO source (id, wiki_id, type, title, raw_content, blob_url, ingested_at, page_ids_touched) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [
       src.id,
       src.wiki_id,
       src.type,
@@ -263,20 +257,45 @@ export async function createSource(input: {
       src.blob_url,
       src.ingested_at,
       src.page_ids_touched,
-    );
+    ],
+  );
   return src;
 }
 
 export async function listSources(wikiId: string): Promise<Source[]> {
-  return db()
-    .prepare("SELECT * FROM source WHERE wiki_id = ? ORDER BY ingested_at DESC")
-    .all(wikiId) as Source[];
+  return query<Source>("SELECT * FROM source WHERE wiki_id = $1 ORDER BY ingested_at DESC", [wikiId]);
 }
 
 export async function listChat(wikiId: string): Promise<ChatMessage[]> {
-  return db()
-    .prepare("SELECT * FROM chat_message WHERE wiki_id = ? ORDER BY created_at ASC")
-    .all(wikiId) as ChatMessage[];
+  return query<ChatMessage>(
+    "SELECT * FROM chat_message WHERE wiki_id = $1 ORDER BY created_at ASC",
+    [wikiId],
+  );
+}
+
+/**
+ * Atomically increment a user's daily counter for `kind`, but only if still under
+ * `limit`. Returns whether the action is allowed. The `WHERE count < limit` on the
+ * conflict path means a maxed-out counter updates nothing and RETURNING yields no
+ * row — so concurrent requests can't overshoot the cap.
+ */
+export async function tryConsumeQuota(
+  userId: string,
+  kind: string,
+  limit: number,
+): Promise<{ allowed: boolean; used: number; limit: number }> {
+  const day = new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
+  const rows = await query<{ count: number }>(
+    `INSERT INTO usage_counter (user_id, day, kind, count)
+     VALUES ($1, $2, $3, 1)
+     ON CONFLICT (user_id, day, kind)
+     DO UPDATE SET count = usage_counter.count + 1
+     WHERE usage_counter.count < $4
+     RETURNING count`,
+    [userId, day, kind, limit],
+  );
+  if (rows.length === 0) return { allowed: false, used: limit, limit };
+  return { allowed: true, used: rows[0].count, limit };
 }
 
 export async function addChatMessage(
@@ -291,10 +310,9 @@ export async function addChatMessage(
     content,
     created_at: now(),
   };
-  db()
-    .prepare(
-      "INSERT INTO chat_message (id, wiki_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-    )
-    .run(msg.id, msg.wiki_id, msg.role, msg.content, msg.created_at);
+  await query(
+    "INSERT INTO chat_message (id, wiki_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)",
+    [msg.id, msg.wiki_id, msg.role, msg.content, msg.created_at],
+  );
   return msg;
 }

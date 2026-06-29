@@ -12,6 +12,7 @@ next-env.d.ts
 # local data + env
 *.db
 *.db-*
+.env
 .env*.local
 
 # misc
