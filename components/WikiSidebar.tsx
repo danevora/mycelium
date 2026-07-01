@@ -8,9 +8,11 @@ type Item = { slug: string; title: string; special: boolean };
 export default function WikiSidebar({
   items,
   activeSlug,
+  wikiId,
 }: {
   items: Item[];
   activeSlug: string;
+  wikiId: string;
 }) {
   const [q, setQ] = useState("");
   const filtered = items.filter((i) =>
@@ -22,7 +24,7 @@ export default function WikiSidebar({
   const row = (i: Item) => (
     <Link
       key={i.slug}
-      href={`/wiki/${i.slug}`}
+      href={`/w/${wikiId}/wiki/${i.slug}`}
       className={`block truncate rounded px-2 py-1 text-sm transition ${
         i.slug === activeSlug
           ? "bg-lav-dim/20 text-lav-light"

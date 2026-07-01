@@ -6,18 +6,22 @@ import remarkGfm from "remark-gfm";
 import { wikilinksToMarkdown } from "@/lib/wikilinks";
 
 /**
- * Renders wiki markdown. [[wikilinks]] are pre-rewritten to /wiki/<slug> links;
- * the custom anchor renderer styles links to non-existent pages as dashed stubs.
+ * Renders wiki markdown. [[wikilinks]] are pre-rewritten to `<basePath>/<slug>`
+ * links (basePath carries the wiki scope, e.g. `/w/<id>/wiki`); the custom anchor
+ * renderer styles links to non-existent pages as dashed stubs.
  */
 export default function MarkdownView({
   content,
   existingSlugs,
+  basePath,
 }: {
   content: string;
   existingSlugs: string[];
+  basePath: string;
 }) {
   const known = new Set(existingSlugs);
-  const md = wikilinksToMarkdown(content);
+  const md = wikilinksToMarkdown(content, basePath);
+  const prefix = `${basePath}/`;
 
   return (
     <div className="prose-wiki">
@@ -26,8 +30,8 @@ export default function MarkdownView({
         components={{
           a({ href, children }) {
             const target = href ?? "";
-            if (target.startsWith("/wiki/")) {
-              const slug = target.slice("/wiki/".length);
+            if (target.startsWith(prefix)) {
+              const slug = target.slice(prefix.length);
               if (!known.has(slug)) {
                 return (
                   <span className="wikilink-stub" title="This page doesn't exist yet">

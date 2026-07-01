@@ -11,7 +11,7 @@ type IngestResponse = {
   error?: string;
 };
 
-export default function AddSource() {
+export default function AddSource({ wikiId }: { wikiId: string }) {
   const router = useRouter();
   const [mode, setMode] = useState<"text" | "url">("text");
   const [title, setTitle] = useState("");
@@ -28,8 +28,8 @@ export default function AddSource() {
     try {
       const payload =
         mode === "url"
-          ? { type: "url", url }
-          : { type: "text", title: title || undefined, content };
+          ? { type: "url", url, wikiId }
+          : { type: "text", title: title || undefined, content, wikiId };
       const res = await fetch("/api/ingest", {
         method: "POST",
         headers: { "content-type": "application/json" },

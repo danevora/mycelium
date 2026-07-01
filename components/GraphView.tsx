@@ -38,7 +38,7 @@ function readPalette(): Palette {
   };
 }
 
-export default function GraphView({ graph }: { graph: Graph }) {
+export default function GraphView({ graph, wikiId }: { graph: Graph; wikiId: string }) {
   const router = useRouter();
   const wrapRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -155,7 +155,7 @@ export default function GraphView({ graph }: { graph: Graph }) {
   const open = (slug: string) => {
     const node = nodeById.get(slug);
     if (node?.isStub) return; // stub has no page to open
-    router.push(`/wiki/${slug}`);
+    router.push(`/w/${wikiId}/wiki/${slug}`);
   };
 
   // Level-of-detail: the more zoomed out, the higher the connection count a

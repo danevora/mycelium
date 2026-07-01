@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import TurndownService from "turndown";
 import {
-  getOrCreateUserWiki,
+  getUserWiki,
   getIndexPage,
   applyPageOperations,
   createSource,
 } from "@/lib/db";
 import { ingestSource } from "@/lib/ai";
+import { isProUser } from "@/lib/billing";
 import { assertFetchableUrl, MAX_SOURCE_CHARS } from "@/lib/safety";
 import { consumeIngestQuota, quotaError } from "@/lib/usage";
 
@@ -16,9 +17,10 @@ export const runtime = "nodejs";
 // sources. Requires Vercel Pro for the full window.
 export const maxDuration = 60;
 
-type Body =
+type Body = { wikiId: string } & (
   | { type: "text"; title?: string; content: string }
-  | { type: "url"; url: string };
+  | { type: "url"; url: string }
+);
 
 async function fetchAsMarkdown(url: string): Promise<{ title: string; markdown: string }> {
   await assertFetchableUrl(url); // SSRF guard: public http(s) hosts only
@@ -46,7 +48,9 @@ export async function POST(req: Request) {
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = (await req.json()) as Body;
-    const wiki = await getOrCreateUserWiki(userId);
+    if (!body.wikiId) return NextResponse.json({ error: "Missing wikiId" }, { status: 400 });
+    const wiki = await getUserWiki(userId, body.wikiId);
+    if (!wiki) return NextResponse.json({ error: "Wiki not found" }, { status: 404 });
 
     let title: string;
     let content: string;
@@ -67,7 +71,7 @@ export async function POST(req: Request) {
     }
 
     // Consume quota only once we have real work to do, just before the paid AI call.
-    const quota = await consumeIngestQuota(userId);
+    const quota = await consumeIngestQuota(userId, await isProUser());
     if (!quota.allowed)
       return NextResponse.json({ error: quotaError("ingest", quota) }, { status: 429 });
 

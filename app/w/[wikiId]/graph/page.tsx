@@ -1,13 +1,14 @@
 import Link from "next/link";
 import GraphView from "@/components/GraphView";
 import { listPages } from "@/lib/db";
-import { requireUserWiki } from "@/lib/auth";
+import { requireWiki } from "@/lib/auth";
 import { buildGraph } from "@/lib/wikilinks";
 
 export const dynamic = "force-dynamic";
 
-export default async function GraphPage() {
-  const wiki = await requireUserWiki();
+export default async function GraphPage({ params }: { params: Promise<{ wikiId: string }> }) {
+  const { wikiId } = await params;
+  const wiki = await requireWiki(wikiId);
   const pages = await listPages(wiki.id);
   const graph = buildGraph(pages);
   const hasContent = pages.some((p) => p.is_index === 0 && p.is_log === 0);
@@ -30,12 +31,12 @@ export default async function GraphPage() {
       </div>
 
       {hasContent ? (
-        <GraphView graph={graph} />
+        <GraphView graph={graph} wikiId={wiki.id} />
       ) : (
         <div className="rounded-xl border border-dashed border-edge p-10 text-center">
           <p className="text-muted">Your graph is empty.</p>
           <Link
-            href="/"
+            href={`/w/${wiki.id}`}
             className="mt-4 inline-block rounded-md bg-lav px-4 py-2 text-sm font-medium text-onaccent hover:bg-lav-light"
           >
             Add your first source
