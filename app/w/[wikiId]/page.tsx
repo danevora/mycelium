@@ -1,5 +1,6 @@
 import Link from "next/link";
 import AddSource from "@/components/AddSource";
+import WikiSchemaEditor from "@/components/WikiSchemaEditor";
 import { listSources, listPages } from "@/lib/db";
 import { requireWiki } from "@/lib/auth";
 
@@ -36,6 +37,11 @@ export default async function Home({ params }: { params: Promise<{ wikiId: strin
             Ask / edit →
           </Link>
         </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-lg font-medium text-fg">Organization rules</h2>
+        <WikiSchemaEditor wikiId={wiki.id} schema={wiki.schema} />
       </section>
 
       <section>

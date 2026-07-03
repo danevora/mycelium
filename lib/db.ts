@@ -160,8 +160,19 @@ export async function getWiki(id: string): Promise<Wiki | undefined> {
   return (await query<Wiki>("SELECT * FROM wiki WHERE id = $1", [id]))[0];
 }
 
-export async function updateWikiSchema(id: string, schema: string): Promise<void> {
-  await query("UPDATE wiki SET schema = $1, updated_at = $2 WHERE id = $3", [schema, now(), id]);
+/** Update a wiki's organization rules (the AI system-prompt schema), only if `userId` owns it. */
+export async function updateWikiSchema(
+  userId: string,
+  wikiId: string,
+  schema: string,
+): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      `UPDATE wiki SET schema = $1, updated_at = $2
+       WHERE id = $3 AND user_id = $4 RETURNING *`,
+      [schema, now(), wikiId, userId],
+    )
+  )[0];
 }
 
 /** Rename / re-describe a wiki, only if `userId` owns it. Returns the updated row. */
