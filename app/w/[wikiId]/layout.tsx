@@ -1,5 +1,6 @@
 import Link from "next/link";
 import WikiSwitcher from "@/components/WikiSwitcher";
+import WikiMenu from "@/components/WikiMenu";
 import { requireWiki } from "@/lib/auth";
 import { listUserWikis } from "@/lib/db";
 
@@ -46,6 +47,9 @@ export default async function WikiLayout({
             </Link>
           ))}
         </nav>
+        <div className="ml-auto">
+          <WikiMenu wikiId={wiki.id} name={wiki.name} />
+        </div>
       </div>
       {children}
     </div>

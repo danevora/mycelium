@@ -6,10 +6,10 @@ import { useRouter } from "next/navigation";
 
 type Wiki = { id: string; name: string; description: string; updated_at: string };
 
-/** A wiki entry on the picker — opens the wiki, or flips to inline rename/edit. */
+/** A wiki entry on the picker: opens the wiki, or a ⋯ menu to rename / delete it. */
 export default function WikiCard({ wiki }: { wiki: Wiki }) {
   const router = useRouter();
-  const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<"view" | "menu" | "edit" | "confirmDelete">("view");
   const [name, setName] = useState(wiki.name);
   const [description, setDescription] = useState(wiki.description);
   const [busy, setBusy] = useState(false);
@@ -26,7 +26,7 @@ export default function WikiCard({ wiki }: { wiki: Wiki }) {
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "Could not save");
-      setEditing(false);
+      setMode("view");
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save");
@@ -35,7 +35,21 @@ export default function WikiCard({ wiki }: { wiki: Wiki }) {
     }
   }
 
-  if (editing) {
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/wikis/${wiki.id}`, { method: "DELETE" });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Could not delete");
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete");
+      setBusy(false);
+    }
+  }
+
+  if (mode === "edit") {
     return (
       <div className="h-full space-y-2 rounded-xl border border-lav-dim bg-card/60 p-5">
         <input
@@ -61,7 +75,7 @@ export default function WikiCard({ wiki }: { wiki: Wiki }) {
           </button>
           <button
             onClick={() => {
-              setEditing(false);
+              setMode("view");
               setName(wiki.name);
               setDescription(wiki.description);
               setError(null);
@@ -76,10 +90,42 @@ export default function WikiCard({ wiki }: { wiki: Wiki }) {
     );
   }
 
+  if (mode === "confirmDelete") {
+    return (
+      <div className="h-full space-y-3 rounded-xl border border-red-500/40 bg-card/60 p-5">
+        <p className="text-sm text-fg">
+          Delete <span className="font-medium">{wiki.name}</span>?
+        </p>
+        <p className="text-xs text-muted">
+          It moves to your trash — you can restore it later.
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={remove}
+            disabled={busy}
+            className="rounded-md bg-red-500/90 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-40"
+          >
+            {busy ? "Deleting…" : "Delete"}
+          </button>
+          <button
+            onClick={() => {
+              setMode("view");
+              setError(null);
+            }}
+            className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:text-fg"
+          >
+            Cancel
+          </button>
+        </div>
+        {error && <p className="text-sm text-red-400">{error}</p>}
+      </div>
+    );
+  }
+
   return (
-    <div className="group relative h-full rounded-xl border border-edge bg-card/50 transition hover:border-lav-dim hover:bg-cardhi">
+    <div className="relative h-full rounded-xl border border-edge bg-card/50 transition hover:border-lav-dim hover:bg-cardhi">
       <Link href={`/w/${wiki.id}`} className="block h-full p-5">
-        <h2 className="truncate pr-12 font-medium text-fg">{wiki.name}</h2>
+        <h2 className="truncate pr-10 font-medium text-fg">{wiki.name}</h2>
         {wiki.description && (
           <p className="mt-1 line-clamp-2 text-sm text-muted">{wiki.description}</p>
         )}
@@ -87,12 +133,34 @@ export default function WikiCard({ wiki }: { wiki: Wiki }) {
           updated {new Date(wiki.updated_at).toLocaleDateString()}
         </p>
       </Link>
+
       <button
-        onClick={() => setEditing(true)}
-        className="absolute right-3 top-3 rounded-md px-2 py-1 text-xs text-faint opacity-0 transition hover:bg-sunken hover:text-fg group-hover:opacity-100"
+        aria-label="Wiki actions"
+        onClick={() => setMode("menu")}
+        className="absolute right-2 top-2 rounded-md px-2 py-1 text-lg leading-none text-faint transition hover:bg-sunken hover:text-fg"
       >
-        Rename
+        ⋯
       </button>
+
+      {mode === "menu" && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setMode("view")} />
+          <div className="absolute right-2 top-9 z-20 w-36 overflow-hidden rounded-lg border border-edge bg-card shadow-glow">
+            <button
+              onClick={() => setMode("edit")}
+              className="block w-full px-3 py-2 text-left text-sm text-fg hover:bg-cardhi"
+            >
+              Rename
+            </button>
+            <button
+              onClick={() => setMode("confirmDelete")}
+              className="block w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-cardhi"
+            >
+              Delete
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

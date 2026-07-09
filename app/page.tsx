@@ -4,7 +4,8 @@ import { SignUpButton, SignInButton } from "@clerk/nextjs";
 import NewWikiButton from "@/components/NewWikiButton";
 import TrySampleButton from "@/components/TrySampleButton";
 import WikiCard from "@/components/WikiCard";
-import { listUserWikis } from "@/lib/db";
+import DeletedWikis from "@/components/DeletedWikis";
+import { listUserWikis, listDeletedWikis } from "@/lib/db";
 import { isProUser, wikiCap } from "@/lib/billing";
 import { WIKI_TEMPLATES } from "@/lib/templates";
 
@@ -185,8 +186,13 @@ function EmptyState() {
  * on the per-tier cap (free: 1, pro: 5).
  */
 async function WikiPicker({ userId }: { userId: string }) {
-  const wikis = await listUserWikis(userId);
-  if (wikis.length === 0) return <EmptyState />;
+  const [wikis, deleted] = await Promise.all([
+    listUserWikis(userId),
+    listDeletedWikis(userId),
+  ]);
+  // Only a truly-empty account (no active wikis AND empty trash) gets onboarding;
+  // if there's something to restore, show the picker so the trash is reachable.
+  if (wikis.length === 0 && deleted.length === 0) return <EmptyState />;
 
   const isPro = await isProUser();
   const cap = wikiCap(isPro);
@@ -229,20 +235,31 @@ async function WikiPicker({ userId }: { userId: string }) {
         </section>
       )}
 
-      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {wikis.map((w) => (
-          <li key={w.id}>
-            <WikiCard
-              wiki={{
-                id: w.id,
-                name: w.name,
-                description: w.description,
-                updated_at: w.updated_at,
-              }}
-            />
-          </li>
-        ))}
-      </ul>
+      {wikis.length > 0 && (
+        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {wikis.map((w) => (
+            <li key={w.id}>
+              <WikiCard
+                wiki={{
+                  id: w.id,
+                  name: w.name,
+                  description: w.description,
+                  updated_at: w.updated_at,
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <DeletedWikis
+        wikis={deleted.map((w) => ({
+          id: w.id,
+          name: w.name,
+          deleted_at: w.deleted_at ?? w.updated_at,
+        }))}
+        atCap={atCap}
+      />
     </div>
   );
 }
