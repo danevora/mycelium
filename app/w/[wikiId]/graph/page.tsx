@@ -1,5 +1,6 @@
 import Link from "next/link";
 import GraphView from "@/components/GraphView";
+import ShareGraphButton from "@/components/ShareGraphButton";
 import { listPages } from "@/lib/db";
 import { requireWiki } from "@/lib/auth";
 import { buildGraph } from "@/lib/wikilinks";
@@ -23,10 +24,13 @@ export default async function GraphPage({ params }: { params: Promise<{ wikiId: 
             stubs grey. Click a node to open it.
           </p>
         </div>
-        <div className="flex gap-3 text-xs text-faint">
-          <Legend color="rgb(var(--lav))" label="page" />
-          <Legend color="rgb(var(--lav-dim))" label="orphan" />
-          <Legend color="rgb(var(--faint))" label="stub" />
+        <div className="flex items-center gap-4">
+          <div className="flex gap-3 text-xs text-faint">
+            <Legend color="rgb(var(--lav))" label="page" />
+            <Legend color="rgb(var(--lav-dim))" label="orphan" />
+            <Legend color="rgb(var(--faint))" label="stub" />
+          </div>
+          <ShareGraphButton wikiId={wiki.id} initialToken={wiki.public_graph_token} />
         </div>
       </div>
 
