@@ -117,9 +117,6 @@ export async function POST(req: Request) {
 
     return await runIngest(userId, wiki, { title, content, type });
   } catch (err) {
-    // Log full detail server-side to diagnose AI/structured-output failures
-    // (NoObjectGeneratedError carries .cause/.text/.finishReason).
-    console.error("[ingest] failed:", err);
     const message = err instanceof Error ? err.message : "Ingest failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
