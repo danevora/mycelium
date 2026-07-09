@@ -10,7 +10,7 @@
  * (scripts/migrate.ts), not on the request path.
  */
 import { Pool, type PoolClient } from "@neondatabase/serverless";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 
 export type Wiki = {
   id: string;
@@ -18,6 +18,7 @@ export type Wiki = {
   name: string;
   description: string;
   schema: string;
+  public_graph_token: string | null; // null = graph not publicly shared
   created_at: string;
   updated_at: string;
 };
@@ -128,6 +129,7 @@ export async function createUserWiki(
   userId: string,
   name = "My Wiki",
   description = "",
+  schema: string = DEFAULT_SCHEMA,
 ): Promise<Wiki> {
   const client = await pool().connect();
   try {
@@ -137,7 +139,7 @@ export async function createUserWiki(
       `INSERT INTO wiki (id, user_id, name, description, schema, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [randomUUID(), userId, name, description, DEFAULT_SCHEMA, ts, ts],
+      [randomUUID(), userId, name, description, schema, ts, ts],
     );
     const wiki = inserted.rows[0] as Wiki;
     await client.query(SEED_PAGE_SQL, [
@@ -188,6 +190,47 @@ export async function updateWikiMeta(
        WHERE id = $4 AND user_id = $5 RETURNING *`,
       [name, description, now(), wikiId, userId],
     )
+  )[0];
+}
+
+/**
+ * Enable public graph sharing for a wiki the caller owns: generate an unguessable
+ * URL-safe token (192 bits of entropy, hex) and store it. Idempotent-ish — calling
+ * again rotates the token. Returns the token, or undefined if `userId` doesn't own
+ * the wiki. Scoped by user_id so only the owner can share.
+ */
+export async function enableGraphShare(
+  userId: string,
+  wikiId: string,
+): Promise<string | undefined> {
+  const token = randomBytes(24).toString("hex");
+  const rows = await query<Wiki>(
+    `UPDATE wiki SET public_graph_token = $1, updated_at = $2
+     WHERE id = $3 AND user_id = $4 RETURNING public_graph_token`,
+    [token, now(), wikiId, userId],
+  );
+  return rows[0]?.public_graph_token ?? undefined;
+}
+
+/** Disable public graph sharing (null the token), only if `userId` owns the wiki. */
+export async function disableGraphShare(userId: string, wikiId: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `UPDATE wiki SET public_graph_token = NULL, updated_at = $1
+     WHERE id = $2 AND user_id = $3 RETURNING id`,
+    [now(), wikiId, userId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Public, no-auth lookup of a wiki by its share token. NOT scoped to any user —
+ * this is the ONLY way the public graph route resolves a wiki. A NULL/empty token
+ * never matches, so a non-shared wiki cannot be reached by id or by a null token.
+ */
+export async function getWikiByShareToken(token: string): Promise<Wiki | undefined> {
+  if (!token) return undefined;
+  return (
+    await query<Wiki>("SELECT * FROM wiki WHERE public_graph_token = $1", [token])
   )[0];
 }
 

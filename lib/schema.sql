@@ -62,3 +62,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_wiki ON chat_message (wiki_id);
 -- (Postgres' auto-generated name for it) on already-provisioned databases.
 ALTER TABLE wiki DROP CONSTRAINT IF EXISTS wiki_user_id_key;
 CREATE INDEX IF NOT EXISTS idx_wiki_user ON wiki (user_id);
+
+-- Public shareable graph: an opt-in, unguessable token. NULL = not shared.
+-- The public route resolves a wiki only by this token, never by id.
+ALTER TABLE wiki ADD COLUMN IF NOT EXISTS public_graph_token TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_share_token ON wiki (public_graph_token);
