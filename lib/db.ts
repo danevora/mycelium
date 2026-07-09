@@ -19,6 +19,7 @@ export type Wiki = {
   description: string;
   schema: string;
   public_graph_token: string | null; // null = graph not publicly shared
+  deleted_at: string | null; // null = active; timestamp = soft-deleted (in trash)
   created_at: string;
   updated_at: string;
 };
@@ -101,23 +102,65 @@ const SEED_PAGE_SQL = `INSERT INTO wiki_page
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
 
 /** All wikis owned by a user, oldest first. */
+/** A user's active (non-trashed) wikis. */
 export async function listUserWikis(userId: string): Promise<Wiki[]> {
-  return query<Wiki>("SELECT * FROM wiki WHERE user_id = $1 ORDER BY created_at ASC", [userId]);
+  return query<Wiki>(
+    "SELECT * FROM wiki WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC",
+    [userId],
+  );
 }
 
-/** How many wikis a user owns — used to enforce the per-tier cap. */
+/** A user's soft-deleted wikis (their trash), most recently deleted first. */
+export async function listDeletedWikis(userId: string): Promise<Wiki[]> {
+  return query<Wiki>(
+    "SELECT * FROM wiki WHERE user_id = $1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+    [userId],
+  );
+}
+
+/** How many ACTIVE wikis a user owns — used to enforce the per-tier cap. */
 export async function countUserWikis(userId: string): Promise<number> {
   const rows = await query<{ count: string }>(
-    "SELECT COUNT(*)::int AS count FROM wiki WHERE user_id = $1",
+    "SELECT COUNT(*)::int AS count FROM wiki WHERE user_id = $1 AND deleted_at IS NULL",
     [userId],
   );
   return Number(rows[0]?.count ?? 0);
 }
 
-/** Fetch a wiki only if `userId` owns it (authorization-checked). */
+/** Fetch an ACTIVE wiki only if `userId` owns it (authorization-checked). */
 export async function getUserWiki(userId: string, wikiId: string): Promise<Wiki | undefined> {
   return (
-    await query<Wiki>("SELECT * FROM wiki WHERE id = $1 AND user_id = $2", [wikiId, userId])
+    await query<Wiki>(
+      "SELECT * FROM wiki WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+      [wikiId, userId],
+    )
+  )[0];
+}
+
+/** Soft-delete an active wiki the caller owns. Returns true if one was trashed. */
+export async function softDeleteWiki(userId: string, wikiId: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `UPDATE wiki SET deleted_at = $1, updated_at = $1
+       WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
+       RETURNING id`,
+    [now(), wikiId, userId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Restore a soft-deleted wiki the caller owns. Callers MUST enforce the per-tier
+ * cap before invoking (a restore reactivates the wiki and re-counts it).
+ * Returns the restored wiki, or undefined if none matched.
+ */
+export async function restoreWiki(userId: string, wikiId: string): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      `UPDATE wiki SET deleted_at = NULL, updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND deleted_at IS NOT NULL
+         RETURNING *`,
+      [now(), wikiId, userId],
+    )
   )[0];
 }
 

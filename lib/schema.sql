@@ -67,3 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_wiki_user ON wiki (user_id);
 -- The public route resolves a wiki only by this token, never by id.
 ALTER TABLE wiki ADD COLUMN IF NOT EXISTS public_graph_token TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_share_token ON wiki (public_graph_token);
+
+-- Soft delete: NULL = active, a timestamp = in the user's trash. Active queries
+-- filter deleted_at IS NULL, so trashed wikis are hidden and don't count against
+-- the per-tier cap; they can be restored (cap permitting) but are never auto-purged.
+ALTER TABLE wiki ADD COLUMN IF NOT EXISTS deleted_at TEXT;
