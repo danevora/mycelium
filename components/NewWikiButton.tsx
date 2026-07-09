@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { WIKI_TEMPLATES } from "@/lib/templates";
 
 /**
  * Creates a named wiki via POST /api/wikis (which enforces the per-tier cap) and
@@ -13,6 +14,7 @@ export default function NewWikiButton() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [templateKey, setTemplateKey] = useState("story-bible");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState(false);
@@ -24,7 +26,7 @@ export default function NewWikiButton() {
       const res = await fetch("/api/wikis", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, description }),
+        body: JSON.stringify({ name, description, templateKey }),
       });
       const data = (await res.json()) as { id?: string; error?: string; upgrade?: boolean };
       if (!res.ok) {
@@ -57,7 +59,7 @@ export default function NewWikiButton() {
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && name.trim()) create();
+          if (e.key === "Enter" && !busy) create();
         }}
         placeholder="Wiki name"
         className="w-full rounded-md border border-edge bg-sunken px-3 py-2 text-sm outline-none focus:border-lav-dim"
@@ -68,10 +70,28 @@ export default function NewWikiButton() {
         placeholder="Description (optional)"
         className="w-full rounded-md border border-edge bg-sunken px-3 py-2 text-sm outline-none focus:border-lav-dim"
       />
+      <div className="space-y-1">
+        <p className="px-1 text-xs font-medium text-muted">Template</p>
+        {WIKI_TEMPLATES.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTemplateKey(t.key)}
+            className={`block w-full rounded-md border px-3 py-2 text-left text-sm transition ${
+              templateKey === t.key
+                ? "border-lav bg-lav/10"
+                : "border-edge bg-sunken hover:border-lav-dim"
+            }`}
+          >
+            <span className="font-medium text-fg">{t.name}</span>
+            <span className="mt-0.5 block text-xs text-muted">{t.tagline}</span>
+          </button>
+        ))}
+      </div>
       <div className="flex items-center gap-2">
         <button
           onClick={create}
-          disabled={busy || !name.trim()}
+          disabled={busy || (!name.trim() && templateKey === "blank")}
           className="rounded-md bg-lav px-4 py-2 text-sm font-medium text-onaccent transition hover:bg-lav-light disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Creating…" : "Create"}

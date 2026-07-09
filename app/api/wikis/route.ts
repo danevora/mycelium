@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { countUserWikis, createUserWiki } from "@/lib/db";
 import { isProUser, wikiCap } from "@/lib/billing";
+import { WIKI_TEMPLATES } from "@/lib/templates";
 
 export const runtime = "nodejs";
 
@@ -29,10 +30,18 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as {
       name?: string;
       description?: string;
+      templateKey?: string;
     };
-    const name = body.name?.trim().slice(0, 80) || "My Wiki";
+    // Resolve the schema server-side from templateKey — never trust a client-sent
+    // schema blob. Unknown/missing key falls back to the blank template (empty schema).
+    const blank = WIKI_TEMPLATES.find((t) => t.key === "blank");
+    const template =
+      WIKI_TEMPLATES.find((t) => t.key === body.templateKey) ?? blank;
+    const name =
+      body.name?.trim().slice(0, 80) ||
+      (template && template.key !== "blank" ? template.name : "My Wiki");
     const description = body.description?.trim().slice(0, 200) ?? "";
-    const wiki = await createUserWiki(userId, name, description);
+    const wiki = await createUserWiki(userId, name, description, template?.schema ?? "");
     return NextResponse.json({ id: wiki.id });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not create wiki";
