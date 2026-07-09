@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type IngestResponse = {
@@ -13,10 +13,12 @@ type IngestResponse = {
 
 export default function AddSource({ wikiId }: { wikiId: string }) {
   const router = useRouter();
-  const [mode, setMode] = useState<"text" | "url">("text");
+  const [mode, setMode] = useState<"text" | "url" | "file">("text");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<IngestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,21 +28,32 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
     setError(null);
     setResult(null);
     try {
-      const payload =
-        mode === "url"
-          ? { type: "url", url, wikiId }
-          : { type: "text", title: title || undefined, content, wikiId };
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      let res: Response;
+      if (mode === "file") {
+        if (!file) throw new Error("Choose a file to upload");
+        const form = new FormData();
+        form.append("wikiId", wikiId);
+        form.append("file", file);
+        res = await fetch("/api/ingest", { method: "POST", body: form });
+      } else {
+        const payload =
+          mode === "url"
+            ? { type: "url", url, wikiId }
+            : { type: "text", title: title || undefined, content, wikiId };
+        res = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
       const data = (await res.json()) as IngestResponse;
       if (!res.ok) throw new Error(data.error ?? "Ingest failed");
       setResult(data);
       setContent("");
       setUrl("");
       setTitle("");
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ingest failed");
@@ -49,7 +62,7 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
     }
   }
 
-  const tab = (m: "text" | "url", label: string) => (
+  const tab = (m: "text" | "url" | "file", label: string) => (
     <button
       onClick={() => setMode(m)}
       className={`rounded-md px-3 py-1.5 text-sm transition ${
@@ -67,9 +80,21 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
       <div className="mb-4 flex items-center gap-2">
         {tab("text", "Paste text")}
         {tab("url", "Add URL")}
+        {tab("file", "Upload file")}
       </div>
 
-      {mode === "text" ? (
+      {mode === "file" ? (
+        <div className="space-y-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.docx"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="w-full rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-muted outline-none file:mr-3 file:rounded-md file:border-0 file:bg-lav-dim file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-lav focus:border-lav-dim"
+          />
+          <p className="text-xs text-faint">Supported: .txt, .md, .docx</p>
+        </div>
+      ) : mode === "text" ? (
         <div className="space-y-3">
           <input
             value={title}
@@ -97,7 +122,10 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
       <div className="mt-4 flex items-center gap-3">
         <button
           onClick={submit}
-          disabled={busy || (mode === "text" ? !content.trim() : !url.trim())}
+          disabled={
+            busy ||
+            (mode === "text" ? !content.trim() : mode === "url" ? !url.trim() : !file)
+          }
           className="rounded-md bg-lav px-4 py-2 text-sm font-medium text-onaccent transition hover:bg-lav-light disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Ingesting…" : "Ingest source"}

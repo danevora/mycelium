@@ -13,6 +13,15 @@ import net from "node:net";
 export const MAX_SOURCE_CHARS = 100_000;
 export const MAX_MESSAGE_CHARS = 8_000;
 
+// Long-document (chunked) ingest bounds.
+// Content up to MAX_SOURCE_CHARS goes through the single-shot ingest path.
+// Beyond that we split into sequential chunks of at most CHUNK_CHARS each.
+export const CHUNK_CHARS = 40_000;
+// Hard upper bound on a single document, to bound total (paid) AI cost.
+// ~2M chars ≈ 300k words; at CHUNK_CHARS that's ~50 chunks.
+export const MAX_DOCUMENT_CHARS = 2_000_000;
+export const MAX_CHUNKS = 60;
+
 function isPrivateIp(ip: string): boolean {
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split(".").map(Number);
