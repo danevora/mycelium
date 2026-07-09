@@ -25,6 +25,7 @@ export default async function WikiLayout({
     { href: `${base}/graph`, label: "Graph" },
     { href: `${base}/wiki`, label: "Wiki" },
     { href: `${base}/chat`, label: "Chat" },
+    { href: `${base}/consistency`, label: "Consistency Check" },
   ];
 
   return (
