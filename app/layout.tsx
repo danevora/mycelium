@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ClerkProvider, SignInButton, UserButton } from "@clerk/nextjs";
 import { auth } from "@clerk/nextjs/server";
 import ThemeToggle from "@/components/ThemeToggle";
+import { isProUser } from "@/lib/billing";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -33,12 +34,7 @@ function Mark() {
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const { userId } = await auth();
-  const nav = [
-    { href: "/", label: "Sources" },
-    { href: "/graph", label: "Graph" },
-    { href: "/wiki", label: "Wiki" },
-    { href: "/chat", label: "Chat" },
-  ];
+  const isPro = userId ? await isProUser() : false;
   return (
     <ClerkProvider>
       <html lang="en" className="dark" suppressHydrationWarning>
@@ -54,18 +50,21 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   Mycelium
                 </span>
               </Link>
-              <nav className="flex items-center gap-1 text-sm">
-                {nav.map((n) => (
-                  <Link
-                    key={n.href}
-                    href={n.href}
-                    className="rounded-md px-3 py-1.5 text-muted transition hover:bg-cardhi hover:text-lav-light"
-                  >
-                    {n.label}
-                  </Link>
-                ))}
-              </nav>
+              <Link
+                href="/"
+                className="rounded-md px-3 py-1.5 text-sm text-muted transition hover:bg-cardhi hover:text-lav-light"
+              >
+                My wikis
+              </Link>
               <div className="ml-auto flex items-center gap-3">
+                {userId && !isPro && (
+                  <Link
+                    href="/billing"
+                    className="rounded-md px-3 py-1.5 text-sm font-medium text-lav transition hover:text-lav-light"
+                  >
+                    Upgrade
+                  </Link>
+                )}
                 <ThemeToggle />
                 {userId ? (
                   <UserButton />

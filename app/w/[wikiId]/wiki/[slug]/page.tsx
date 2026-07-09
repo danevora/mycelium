@@ -1,19 +1,23 @@
 import Link from "next/link";
 import MarkdownView from "@/components/MarkdownView";
 import WikiSidebar from "@/components/WikiSidebar";
-import { listPages, getPage } from "@/lib/db";
-import { requireUserWiki } from "@/lib/auth";
+import { listPages, getPage, listSourcesForPage } from "@/lib/db";
+import { requireWiki } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function WikiPageView({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ wikiId: string; slug: string }>;
 }) {
-  const { slug } = await params;
-  const wiki = await requireUserWiki();
-  const [pages, page] = await Promise.all([listPages(wiki.id), getPage(wiki.id, slug)]);
+  const { wikiId, slug } = await params;
+  const wiki = await requireWiki(wikiId);
+  const [pages, page, sources] = await Promise.all([
+    listPages(wiki.id),
+    getPage(wiki.id, slug),
+    listSourcesForPage(wiki.id, slug),
+  ]);
 
   const items = pages.map((p) => ({
     slug: p.slug,
@@ -24,7 +28,7 @@ export default async function WikiPageView({
 
   return (
     <div className="flex gap-8">
-      <WikiSidebar items={items} activeSlug={slug} />
+      <WikiSidebar items={items} activeSlug={slug} wikiId={wiki.id} />
       <article className="min-w-0 flex-1">
         {page ? (
           <>
@@ -36,7 +40,33 @@ export default async function WikiPageView({
                 updated {new Date(page.updated_at).toLocaleString()}
               </span>
             </div>
-            <MarkdownView content={page.content} existingSlugs={existingSlugs} />
+            <MarkdownView
+              content={page.content}
+              existingSlugs={existingSlugs}
+              basePath={`/w/${wiki.id}/wiki`}
+            />
+            {sources.length > 0 && (
+              <div className="mt-8 border-t border-edge pt-4">
+                <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-faint">
+                  Built from
+                </h2>
+                <ul className="space-y-1">
+                  {sources.map((s) => (
+                    <li key={s.id}>
+                      <Link
+                        href={`/w/${wiki.id}/source/${s.id}`}
+                        className="text-sm text-lav hover:text-lav-light"
+                      >
+                        {s.title}
+                      </Link>
+                      <span className="ml-2 text-xs uppercase tracking-wide text-faint">
+                        {s.type}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </>
         ) : (
           <div className="rounded-xl border border-dashed border-edge p-8 text-center">
@@ -52,7 +82,7 @@ export default async function WikiPageView({
               sources, or ask the chat to create it.
             </p>
             <Link
-              href="/"
+              href={`/w/${wiki.id}`}
               className="mt-4 inline-block rounded-md bg-lav px-4 py-2 text-sm font-medium text-onaccent hover:bg-lav-light"
             >
               Add a source

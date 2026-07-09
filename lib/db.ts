@@ -4,13 +4,13 @@
  * Backed by Neon serverless Postgres (provisioned via Vercel's Neon integration,
  * which injects DATABASE_URL). Everything is `async`; SQL is kept portable
  * (TEXT/INTEGER columns, ISO-string timestamps, `RETURNING`). Per-user scoping
- * lives on `wiki.user_id` (a Clerk user id) — one wiki per user.
+ * lives on `wiki.user_id` (a Clerk user id); a user may own several wikis (pro tier).
  *
  * Table DDL lives in `lib/schema.sql` and is applied once via `npm run db:setup`
  * (scripts/migrate.ts), not on the request path.
  */
 import { Pool, type PoolClient } from "@neondatabase/serverless";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 
 export type Wiki = {
   id: string;
@@ -18,6 +18,8 @@ export type Wiki = {
   name: string;
   description: string;
   schema: string;
+  public_graph_token: string | null; // null = graph not publicly shared
+  deleted_at: string | null; // null = active; timestamp = soft-deleted (in trash)
   created_at: string;
   updated_at: string;
 };
@@ -99,15 +101,79 @@ const SEED_PAGE_SQL = `INSERT INTO wiki_page
   (id, wiki_id, title, slug, content, is_index, is_log, created_at, updated_at)
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
 
-/**
- * Return the signed-in user's wiki, creating + seeding it (index/log pages) on
- * first visit. `wiki.user_id` is UNIQUE so the `ON CONFLICT` guards two first-load
- * requests racing each other.
- */
-export async function getOrCreateUserWiki(userId: string): Promise<Wiki> {
-  const existing = await query<Wiki>("SELECT * FROM wiki WHERE user_id = $1 LIMIT 1", [userId]);
-  if (existing[0]) return existing[0];
+/** All wikis owned by a user, oldest first. */
+/** A user's active (non-trashed) wikis. */
+export async function listUserWikis(userId: string): Promise<Wiki[]> {
+  return query<Wiki>(
+    "SELECT * FROM wiki WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC",
+    [userId],
+  );
+}
 
+/** A user's soft-deleted wikis (their trash), most recently deleted first. */
+export async function listDeletedWikis(userId: string): Promise<Wiki[]> {
+  return query<Wiki>(
+    "SELECT * FROM wiki WHERE user_id = $1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+    [userId],
+  );
+}
+
+/** How many ACTIVE wikis a user owns — used to enforce the per-tier cap. */
+export async function countUserWikis(userId: string): Promise<number> {
+  const rows = await query<{ count: string }>(
+    "SELECT COUNT(*)::int AS count FROM wiki WHERE user_id = $1 AND deleted_at IS NULL",
+    [userId],
+  );
+  return Number(rows[0]?.count ?? 0);
+}
+
+/** Fetch an ACTIVE wiki only if `userId` owns it (authorization-checked). */
+export async function getUserWiki(userId: string, wikiId: string): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      "SELECT * FROM wiki WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+      [wikiId, userId],
+    )
+  )[0];
+}
+
+/** Soft-delete an active wiki the caller owns. Returns true if one was trashed. */
+export async function softDeleteWiki(userId: string, wikiId: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `UPDATE wiki SET deleted_at = $1, updated_at = $1
+       WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
+       RETURNING id`,
+    [now(), wikiId, userId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Restore a soft-deleted wiki the caller owns. Callers MUST enforce the per-tier
+ * cap before invoking (a restore reactivates the wiki and re-counts it).
+ * Returns the restored wiki, or undefined if none matched.
+ */
+export async function restoreWiki(userId: string, wikiId: string): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      `UPDATE wiki SET deleted_at = NULL, updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND deleted_at IS NOT NULL
+         RETURNING *`,
+      [now(), wikiId, userId],
+    )
+  )[0];
+}
+
+/**
+ * Create a new wiki for `userId`, seeding its index/log pages atomically.
+ * Callers enforce the per-tier wiki cap before invoking this.
+ */
+export async function createUserWiki(
+  userId: string,
+  name = "My Wiki",
+  description = "",
+  schema: string = DEFAULT_SCHEMA,
+): Promise<Wiki> {
   const client = await pool().connect();
   try {
     await client.query("BEGIN");
@@ -115,18 +181,9 @@ export async function getOrCreateUserWiki(userId: string): Promise<Wiki> {
     const inserted = await client.query(
       `INSERT INTO wiki (id, user_id, name, description, schema, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (user_id) DO NOTHING
        RETURNING *`,
-      [randomUUID(), userId, "My Wiki", "An AI-maintained knowledge base.", DEFAULT_SCHEMA, ts, ts],
+      [randomUUID(), userId, name, description, schema, ts, ts],
     );
-
-    if (inserted.rows.length === 0) {
-      // Lost the race — another request just created it. Return that one.
-      await client.query("COMMIT");
-      const w = await query<Wiki>("SELECT * FROM wiki WHERE user_id = $1 LIMIT 1", [userId]);
-      return w[0];
-    }
-
     const wiki = inserted.rows[0] as Wiki;
     await client.query(SEED_PAGE_SQL, [
       randomUUID(), wiki.id, "Index", "index", "# Index\n\n_No pages yet._\n", 1, 0, ts, ts,
@@ -148,8 +205,76 @@ export async function getWiki(id: string): Promise<Wiki | undefined> {
   return (await query<Wiki>("SELECT * FROM wiki WHERE id = $1", [id]))[0];
 }
 
-export async function updateWikiSchema(id: string, schema: string): Promise<void> {
-  await query("UPDATE wiki SET schema = $1, updated_at = $2 WHERE id = $3", [schema, now(), id]);
+/** Update a wiki's organization rules (the AI system-prompt schema), only if `userId` owns it. */
+export async function updateWikiSchema(
+  userId: string,
+  wikiId: string,
+  schema: string,
+): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      `UPDATE wiki SET schema = $1, updated_at = $2
+       WHERE id = $3 AND user_id = $4 RETURNING *`,
+      [schema, now(), wikiId, userId],
+    )
+  )[0];
+}
+
+/** Rename / re-describe a wiki, only if `userId` owns it. Returns the updated row. */
+export async function updateWikiMeta(
+  userId: string,
+  wikiId: string,
+  name: string,
+  description: string,
+): Promise<Wiki | undefined> {
+  return (
+    await query<Wiki>(
+      `UPDATE wiki SET name = $1, description = $2, updated_at = $3
+       WHERE id = $4 AND user_id = $5 RETURNING *`,
+      [name, description, now(), wikiId, userId],
+    )
+  )[0];
+}
+
+/**
+ * Enable public graph sharing for a wiki the caller owns: generate an unguessable
+ * URL-safe token (192 bits of entropy, hex) and store it. Idempotent-ish — calling
+ * again rotates the token. Returns the token, or undefined if `userId` doesn't own
+ * the wiki. Scoped by user_id so only the owner can share.
+ */
+export async function enableGraphShare(
+  userId: string,
+  wikiId: string,
+): Promise<string | undefined> {
+  const token = randomBytes(24).toString("hex");
+  const rows = await query<Wiki>(
+    `UPDATE wiki SET public_graph_token = $1, updated_at = $2
+     WHERE id = $3 AND user_id = $4 RETURNING public_graph_token`,
+    [token, now(), wikiId, userId],
+  );
+  return rows[0]?.public_graph_token ?? undefined;
+}
+
+/** Disable public graph sharing (null the token), only if `userId` owns the wiki. */
+export async function disableGraphShare(userId: string, wikiId: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `UPDATE wiki SET public_graph_token = NULL, updated_at = $1
+     WHERE id = $2 AND user_id = $3 RETURNING id`,
+    [now(), wikiId, userId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Public, no-auth lookup of a wiki by its share token. NOT scoped to any user —
+ * this is the ONLY way the public graph route resolves a wiki. A NULL/empty token
+ * never matches, so a non-shared wiki cannot be reached by id or by a null token.
+ */
+export async function getWikiByShareToken(token: string): Promise<Wiki | undefined> {
+  if (!token) return undefined;
+  return (
+    await query<Wiki>("SELECT * FROM wiki WHERE public_graph_token = $1", [token])
+  )[0];
 }
 
 export async function listPages(wikiId: string): Promise<WikiPage[]> {
@@ -264,6 +389,26 @@ export async function createSource(input: {
 
 export async function listSources(wikiId: string): Promise<Source[]> {
   return query<Source>("SELECT * FROM source WHERE wiki_id = $1 ORDER BY ingested_at DESC", [wikiId]);
+}
+
+/** A single source, scoped to its wiki (so it can't be read across wikis). */
+export async function getSource(wikiId: string, id: string): Promise<Source | undefined> {
+  return (
+    await query<Source>("SELECT * FROM source WHERE wiki_id = $1 AND id = $2", [wikiId, id])
+  )[0];
+}
+
+/**
+ * Sources whose ingest created/updated the given page slug — the provenance of a
+ * page. `page_ids_touched` is a JSON array of slugs; `@>` tests membership.
+ */
+export async function listSourcesForPage(wikiId: string, slug: string): Promise<Source[]> {
+  return query<Source>(
+    `SELECT * FROM source
+     WHERE wiki_id = $1 AND page_ids_touched::jsonb @> to_jsonb($2::text)
+     ORDER BY ingested_at DESC`,
+    [wikiId, slug],
+  );
 }
 
 export async function listChat(wikiId: string): Promise<ChatMessage[]> {

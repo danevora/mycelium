@@ -14,10 +14,13 @@ type Msg = {
 export default function ChatPanel({
   initial,
   existingSlugs,
+  wikiId,
 }: {
   initial: Msg[];
   existingSlugs: string[];
+  wikiId: string;
 }) {
+  const wikiBase = `/w/${wikiId}/wiki`;
   const router = useRouter();
   const [messages, setMessages] = useState<Msg[]>(initial);
   const [input, setInput] = useState("");
@@ -40,7 +43,7 @@ export default function ChatPanel({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, wikiId }),
       });
       const data = (await res.json()) as {
         reply?: string;
@@ -79,7 +82,7 @@ export default function ChatPanel({
               }`}
             >
               {m.role === "assistant" ? (
-                <MarkdownView content={m.content} existingSlugs={existingSlugs} />
+                <MarkdownView content={m.content} existingSlugs={existingSlugs} basePath={wikiBase} />
               ) : (
                 <span className="whitespace-pre-wrap">{m.content}</span>
               )}
@@ -89,7 +92,7 @@ export default function ChatPanel({
                   {m.changedSlugs!.map((s) => (
                     <Link
                       key={s}
-                      href={`/wiki/${s}`}
+                      href={`${wikiBase}/${s}`}
                       className="rounded bg-lav-dim/20 px-1.5 py-0.5 text-xs text-lav-light hover:bg-lav-dim/40"
                     >
                       {s}

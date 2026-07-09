@@ -1,11 +1,12 @@
 import ChatPanel from "@/components/ChatPanel";
 import { listChat, listPages } from "@/lib/db";
-import { requireUserWiki } from "@/lib/auth";
+import { requireWiki } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export default async function ChatPage() {
-  const wiki = await requireUserWiki();
+export default async function ChatPage({ params }: { params: Promise<{ wikiId: string }> }) {
+  const { wikiId } = await params;
+  const wiki = await requireWiki(wikiId);
   const [history, pages] = await Promise.all([listChat(wiki.id), listPages(wiki.id)]);
 
   return (
@@ -19,6 +20,7 @@ export default async function ChatPage() {
       <ChatPanel
         initial={history.map((m) => ({ role: m.role, content: m.content }))}
         existingSlugs={pages.map((p) => p.slug)}
+        wikiId={wiki.id}
       />
     </div>
   );

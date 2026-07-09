@@ -4,7 +4,7 @@
 
 CREATE TABLE IF NOT EXISTS wiki (
   id          TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL UNIQUE,   -- Clerk user id; one wiki per user
+  user_id     TEXT NOT NULL,          -- Clerk user id; a user may own several wikis (pro tier)
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   schema      TEXT NOT NULL DEFAULT '',
@@ -57,3 +57,18 @@ CREATE TABLE IF NOT EXISTS usage_counter (
 CREATE INDEX IF NOT EXISTS idx_wiki_page_wiki    ON wiki_page (wiki_id);
 CREATE INDEX IF NOT EXISTS idx_source_wiki       ON source (wiki_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_wiki ON chat_message (wiki_id);
+
+-- Pro tier: multiple wikis per user. Drop the old one-wiki-per-user UNIQUE
+-- (Postgres' auto-generated name for it) on already-provisioned databases.
+ALTER TABLE wiki DROP CONSTRAINT IF EXISTS wiki_user_id_key;
+CREATE INDEX IF NOT EXISTS idx_wiki_user ON wiki (user_id);
+
+-- Public shareable graph: an opt-in, unguessable token. NULL = not shared.
+-- The public route resolves a wiki only by this token, never by id.
+ALTER TABLE wiki ADD COLUMN IF NOT EXISTS public_graph_token TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_share_token ON wiki (public_graph_token);
+
+-- Soft delete: NULL = active, a timestamp = in the user's trash. Active queries
+-- filter deleted_at IS NULL, so trashed wikis are hidden and don't count against
+-- the per-tier cap; they can be restored (cap permitting) but are never auto-purged.
+ALTER TABLE wiki ADD COLUMN IF NOT EXISTS deleted_at TEXT;

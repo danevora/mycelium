@@ -13,6 +13,11 @@ import type { PageOperation } from "./db";
 // AI Gateway model slug (creator/model). Override via env if the catalog slug differs.
 const MODEL = process.env.MYCELIUM_MODEL ?? "anthropic/claude-sonnet-4-6";
 
+// A single ingest/chat response can emit many full wiki pages as structured JSON.
+// The provider default output cap (~4k tokens) truncates that mid-JSON, which then
+// fails schema validation ("No object generated"). Give generation a generous budget.
+const MAX_OUTPUT_TOKENS = 32_000;
+
 const operationSchema = z.object({
   operation: z.enum(["create", "update"]),
   slug: z.string().describe("lowercase-hyphenated page slug"),
@@ -56,6 +61,7 @@ ${input.content}`;
 
   const { object } = await generateObject({
     model: MODEL,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     schema: z.object({
       operations: z.array(operationSchema),
       summary: z.string(),
@@ -65,6 +71,73 @@ ${input.content}`;
   });
 
   return { operations: object.operations, summary: object.summary };
+}
+
+/**
+ * Split a long document into sequential chunks for chunked ingest, each at most
+ * `chunkChars` long. Pure function (no I/O) so it is unit-testable.
+ *
+ * Strategy: split on natural section boundaries first — chapter/part markers and
+ * markdown headings (h1–h3) — then greedily pack those sections into chunks. A
+ * section larger than the budget is further split on paragraph breaks, and as a
+ * last resort hard-sliced by size, so no chunk exceeds `chunkChars`.
+ */
+export function splitIntoChunks(content: string, chunkChars: number): string[] {
+  if (content.length <= chunkChars) return [content];
+
+  const boundary = /^\s*(chapter\s+\w+|part\s+\w+)\b|^\s*#{1,3}\s/i;
+  const lines = content.split("\n");
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (boundary.test(line) && current.length > 0) {
+      sections.push(current.join("\n"));
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) sections.push(current.join("\n"));
+
+  const chunks: string[] = [];
+  let buf = "";
+  const flush = () => {
+    if (buf.trim()) chunks.push(buf);
+    buf = "";
+  };
+  for (const section of sections) {
+    for (const piece of splitBySize(section, chunkChars)) {
+      if (buf && buf.length + piece.length + 1 > chunkChars) flush();
+      buf = buf ? buf + "\n" + piece : piece;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+// Split a single section that may exceed the budget: by paragraphs, then by hard size.
+function splitBySize(section: string, chunkChars: number): string[] {
+  if (section.length <= chunkChars) return [section];
+  const paras = section.split(/\n\s*\n/);
+  const out: string[] = [];
+  let buf = "";
+  for (const para of paras) {
+    if (para.length > chunkChars) {
+      if (buf) {
+        out.push(buf);
+        buf = "";
+      }
+      for (let i = 0; i < para.length; i += chunkChars) out.push(para.slice(i, i + chunkChars));
+      continue;
+    }
+    if (buf && buf.length + para.length + 2 > chunkChars) {
+      out.push(buf);
+      buf = "";
+    }
+    buf = buf ? buf + "\n\n" + para : para;
+  }
+  if (buf) out.push(buf);
+  return out;
 }
 
 export type ChatResult = { reply: string; operations: PageOperation[] };
@@ -97,6 +170,7 @@ User message: ${input.message}`;
 
   const { object } = await generateObject({
     model: MODEL,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     schema: z.object({
       reply: z.string(),
       operations: z.array(operationSchema),
@@ -106,4 +180,63 @@ User message: ${input.message}`;
   });
 
   return { reply: object.reply, operations: object.operations };
+}
+
+export type ConsistencyFinding = { entity: string; issue: string; locations: string[] };
+export type ConsistencyResult = { findings: ConsistencyFinding[] };
+
+// Cap total page content sent to the model, in the spirit of MAX_SOURCE_CHARS.
+const MAX_CONSISTENCY_CHARS = 60_000;
+
+export async function checkConsistency(input: {
+  schema: string;
+  pages: { slug: string; title: string; content: string }[];
+}): Promise<ConsistencyResult> {
+  const system = `You are auditing a personal knowledge wiki for internal factual contradictions.
+
+Wiki schema and conventions:
+${input.schema}
+
+Instructions:
+1. Read all the provided pages together as one knowledge base.
+2. Find genuine factual contradictions or inconsistencies between pages (or within a page):
+   an attribute stated differently in two places (e.g. eye color, birthplace, a number),
+   timeline/date conflicts, mutually exclusive claims about the same entity.
+3. Return one finding per distinct contradiction, with:
+   - "entity": the person/place/thing/concept the contradiction is about,
+   - "issue": a single-line description of the conflicting statements,
+   - "locations": the page slugs (or titles) where the conflicting statements appear.
+4. Only report real contradictions — do not invent issues or flag mere incompleteness.
+   If the wiki is internally consistent, return an empty "findings" array.`;
+
+  // Budget the payload: include pages until we hit the char cap.
+  let used = 0;
+  const blocks: string[] = [];
+  for (const p of input.pages) {
+    const block = `--- page: ${p.slug} (${p.title}) ---\n${p.content}`;
+    if (used + block.length > MAX_CONSISTENCY_CHARS) break;
+    blocks.push(block);
+    used += block.length;
+  }
+
+  const prompt = `Wiki pages to audit:
+${blocks.join("\n\n") || "_no pages_"}`;
+
+  const { object } = await generateObject({
+    model: MODEL,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    schema: z.object({
+      findings: z.array(
+        z.object({
+          entity: z.string(),
+          issue: z.string(),
+          locations: z.array(z.string()),
+        }),
+      ),
+    }),
+    system,
+    prompt,
+  });
+
+  return { findings: object.findings };
 }

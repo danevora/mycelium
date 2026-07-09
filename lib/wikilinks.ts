@@ -99,16 +99,17 @@ export function isResolved(slug: string, pages: WikiPage[]): boolean {
 
 /**
  * Rewrite [[Target]] / [[Target|Label]] into standard markdown links pointing at
- * /wiki/<slug>, so a normal markdown renderer can display them. Stub vs. resolved
- * styling is decided at render time by the link component (see MarkdownView).
+ * `<basePath>/<slug>`, so a normal markdown renderer can display them. `basePath`
+ * carries the wiki scope (e.g. `/w/<wikiId>/wiki`). Stub vs. resolved styling is
+ * decided at render time by the link component (see MarkdownView).
  */
-export function wikilinksToMarkdown(content: string): string {
+export function wikilinksToMarkdown(content: string, basePath = "/wiki"): string {
   const re = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
   return content.replace(re, (_full, target: string, label?: string) => {
     const slug = slugify(target);
     const text = (label ?? target).trim();
     // Escape any ] in the label so we don't break the markdown link syntax.
     const safe = text.replace(/]/g, "\\]");
-    return `[${safe}](/wiki/${slug})`;
+    return `[${safe}](${basePath}/${slug})`;
   });
 }
