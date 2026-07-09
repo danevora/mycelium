@@ -10,7 +10,7 @@ import { auth } from "@clerk/nextjs/server";
 
 export const PRO_PLAN_SLUG = process.env.CLERK_PRO_PLAN_SLUG ?? "pro";
 
-const FREE_WIKI_CAP = 1;
+const FREE_WIKI_CAP = 3;
 const PRO_WIKI_CAP = 5;
 
 export async function isProUser(): Promise<boolean> {
