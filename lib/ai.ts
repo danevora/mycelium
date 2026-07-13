@@ -6,7 +6,7 @@
  * or OIDC automatically on Vercel. Structured page operations come back via
  * `generateObject` + a Zod schema, so the JSON is validated for us.
  */
-import { generateObject } from "ai";
+import { generateObject, streamText, tool } from "ai";
 import { z } from "zod";
 import type { PageOperation } from "./db";
 
@@ -140,21 +140,36 @@ function splitBySize(section: string, chunkChars: number): string[] {
   return out;
 }
 
-export type ChatResult = { reply: string; operations: PageOperation[] };
+const editPagesInput = z.object({ operations: z.array(operationSchema) });
 
-export async function chat(input: {
+export type ChatInput = {
   message: string;
   schema: string;
   indexMd: string;
   relevantPages: { slug: string; title: string; content: string }[];
-}): Promise<ChatResult> {
+};
+
+/**
+ * Chat, streamed.
+ *
+ * The reply is plain streamed TEXT and the page edits arrive as a tool call.
+ * The obvious alternative — `streamObject` with a `{reply, operations}` schema —
+ * does not actually stream: measured against the Gateway, the whole object lands
+ * in one ~50ms burst after the full generation latency, because structured output
+ * rides on tool-call JSON that the provider does not emit incrementally. `streamText`
+ * emits token deltas the whole way, and a tool the model *chooses* to call still
+ * gives us validated operations.
+ *
+ * The caller drains `textStream` for the reply, then awaits `toolCalls` for edits.
+ */
+export function streamChat(input: ChatInput) {
   const system = `You are maintaining a personal knowledge wiki and helping the user query and edit it.
 
 Wiki schema:
 ${input.schema}
 
-If the user is asking a question: answer it from the wiki, citing specific pages with [[slug]] wikilinks. Return an empty "operations" array.
-If the user is requesting an edit: make the changes and return the updated page content in "operations" (create/update), keeping [[wikilinks]] consistent and updating index/log as needed. In "reply", give a short plain-language summary of what changed.`;
+If the user is asking a question: answer it from the wiki in prose, citing specific pages with [[slug]] wikilinks. Do not call any tool.
+If the user is requesting an edit: FIRST write a short plain-language summary of what you are changing, THEN call the "editPages" tool exactly once with the full content of every page you create or update, keeping [[wikilinks]] consistent and updating the index and log pages as needed.`;
 
   const pageBlocks = input.relevantPages
     .map((p) => `--- page: ${p.slug} (${p.title}) ---\n${p.content}`)
@@ -168,18 +183,30 @@ ${pageBlocks || "_none retrieved_"}
 
 User message: ${input.message}`;
 
-  const { object } = await generateObject({
+  return streamText({
     model: MODEL,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
-    schema: z.object({
-      reply: z.string(),
-      operations: z.array(operationSchema),
-    }),
     system,
     prompt,
+    tools: {
+      // No `execute`: the model proposing operations is not the same as applying
+      // them. Generation stops at the call and the route applies them to the DB.
+      editPages: tool({
+        description: "Create or update wiki pages. Call once, only for edit requests.",
+        inputSchema: editPagesInput,
+      }),
+    },
   });
+}
 
-  return { reply: object.reply, operations: object.operations };
+/** Operations from a finished `streamChat`. Re-validated before they touch the DB. */
+export async function chatOperations(
+  result: ReturnType<typeof streamChat>,
+): Promise<PageOperation[]> {
+  const calls = await result.toolCalls;
+  return calls.flatMap((c) =>
+    c.toolName === "editPages" ? editPagesInput.parse(c.input).operations : [],
+  );
 }
 
 export type ConsistencyFinding = { entity: string; issue: string; locations: string[] };

@@ -7,15 +7,16 @@ import {
   applyPageOperations,
   addChatMessage,
 } from "@/lib/db";
-import { chat } from "@/lib/ai";
+import { streamChat, chatOperations } from "@/lib/ai";
 import type { WikiPage } from "@/lib/db";
 import { isProUser } from "@/lib/billing";
 import { MAX_MESSAGE_CHARS } from "@/lib/safety";
 import { consumeChatQuota, quotaError } from "@/lib/usage";
+import { ndjsonResponse } from "@/lib/ndjson";
 
 export const runtime = "nodejs";
-// Chat may edit pages via generateObject; same timeout concern as ingest.
-export const maxDuration = 60;
+// Chat may edit pages after generating; same timeout concern as ingest.
+export const maxDuration = 300;
 
 /**
  * Naive relevance: pick pages whose slug/title shares a word with the message.
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
     const relevant = selectRelevant(pages, message);
 
     await addChatMessage(wiki.id, "user", message);
-    const result = await chat({
+    const result = streamChat({
       message,
       schema: wiki.schema,
       indexMd: indexPage?.content ?? "",
@@ -80,15 +81,23 @@ export async function POST(req: Request) {
         content: p.content,
       })),
     });
-    await addChatMessage(wiki.id, "assistant", result.reply);
 
-    let changedSlugs: string[] = [];
-    if (result.operations.length > 0) {
-      const { created, updated } = await applyPageOperations(wiki.id, result.operations);
-      changedSlugs = [...new Set([...created, ...updated])];
-    }
+    return ndjsonResponse(async (send) => {
+      for await (const text of result.textStream) {
+        if (text) send({ type: "delta", text });
+      }
 
-    return NextResponse.json({ reply: result.reply, changedSlugs });
+      // Only after the prose is done does the model's edit tool call resolve.
+      const operations = await chatOperations(result);
+      await addChatMessage(wiki.id, "assistant", await result.text);
+
+      let changedSlugs: string[] = [];
+      if (operations.length > 0) {
+        const { created, updated } = await applyPageOperations(wiki.id, operations);
+        changedSlugs = [...new Set([...created, ...updated])];
+      }
+      send({ type: "done", changedSlugs });
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Chat failed";
     return NextResponse.json({ error: message }, { status: 500 });

@@ -4,25 +4,32 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import MarkdownView from "@/components/MarkdownView";
+import { readNdjson } from "@/lib/ndjson-client";
 
 type Msg = {
+  id: string;
   role: "user" | "assistant";
   content: string;
   changedSlugs?: string[];
 };
+
+// Events streamed by /api/chat (`error` is raised by readNdjson, not seen here).
+type ChatEvent = { type: "delta"; text: string } | { type: "done"; changedSlugs?: string[] };
 
 export default function ChatPanel({
   initial,
   existingSlugs,
   wikiId,
 }: {
-  initial: Msg[];
+  initial: Omit<Msg, "id">[];
   existingSlugs: string[];
   wikiId: string;
 }) {
   const wikiBase = `/w/${wikiId}/wiki`;
   const router = useRouter();
-  const [messages, setMessages] = useState<Msg[]>(initial);
+  const [messages, setMessages] = useState<Msg[]>(() =>
+    initial.map((m) => ({ ...m, id: crypto.randomUUID() })),
+  );
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,25 +44,39 @@ export default function ChatPanel({
     if (!text || busy) return;
     setInput("");
     setError(null);
-    setMessages((m) => [...m, { role: "user", content: text }]);
+    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", content: text }]);
     setBusy(true);
+
+    // The assistant bubble appears on the first event and grows as deltas land.
+    // Keyed by id, not index, so concurrent appends can't mutate the wrong row.
+    const replyId = crypto.randomUUID();
+    let placed = false;
+    const patch = (fn: (m: Msg) => Msg) => {
+      const first = !placed;
+      placed = true; // decided outside the updater, which must stay pure
+      setMessages((all) =>
+        first
+          ? [...all, fn({ id: replyId, role: "assistant", content: "" })]
+          : all.map((m) => (m.id === replyId ? fn(m) : m)),
+      );
+    };
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message: text, wikiId }),
       });
-      const data = (await res.json()) as {
-        reply?: string;
-        changedSlugs?: string[];
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error ?? "Chat failed");
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: data.reply ?? "", changedSlugs: data.changedSlugs },
-      ]);
-      if ((data.changedSlugs?.length ?? 0) > 0) router.refresh();
+
+      await readNdjson<ChatEvent>(res, (event) => {
+        if (event.type === "delta") {
+          patch((m) => ({ ...m, content: m.content + event.text }));
+        } else if (event.type === "done") {
+          const changedSlugs = event.changedSlugs ?? [];
+          patch((m) => (changedSlugs.length > 0 ? { ...m, changedSlugs } : m));
+          if (changedSlugs.length > 0) router.refresh();
+        }
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Chat failed");
     } finally {
@@ -72,8 +93,8 @@ export default function ChatPanel({
             “add that Lady Jessica is Paul’s mother”.
           </p>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+        {messages.map((m) => (
+          <div key={m.id} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
             <div
               className={`max-w-[85%] rounded-lg px-4 py-2.5 text-sm ${
                 m.role === "user"
@@ -103,7 +124,10 @@ export default function ChatPanel({
             </div>
           </div>
         ))}
-        {busy && <p className="text-sm text-faint">Thinking…</p>}
+        {/* Only until the reply bubble appears — after that the text streams into it. */}
+        {busy && messages[messages.length - 1]?.role === "user" && (
+          <p className="text-sm text-faint">Thinking…</p>
+        )}
         {error && <p className="text-sm text-red-400">{error}</p>}
         <div ref={endRef} />
       </div>
