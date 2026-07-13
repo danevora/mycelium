@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { readNdjson } from "@/lib/ndjson-client";
 
 type IngestResponse = {
   summary?: string;
@@ -10,6 +11,11 @@ type IngestResponse = {
   touchedSlugs?: string[];
   error?: string;
 };
+
+// Events streamed by /api/ingest (`error` is raised by readNdjson, not seen here).
+type IngestEvent =
+  | { type: "progress"; chunk: number; of: number }
+  | ({ type: "done" } & IngestResponse);
 
 export default function AddSource({ wikiId }: { wikiId: string }) {
   const router = useRouter();
@@ -20,6 +26,7 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
   const [file, setFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ chunk: number; of: number } | null>(null);
   const [result, setResult] = useState<IngestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +34,7 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
     setBusy(true);
     setError(null);
     setResult(null);
+    setProgress(null);
     try {
       let res: Response;
       if (mode === "file") {
@@ -46,19 +54,25 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
           body: JSON.stringify(payload),
         });
       }
-      const data = (await res.json()) as IngestResponse;
-      if (!res.ok) throw new Error(data.error ?? "Ingest failed");
-      setResult(data);
-      setContent("");
-      setUrl("");
-      setTitle("");
-      setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      router.refresh();
+      await readNdjson<IngestEvent>(res, (event) => {
+        if (event.type === "progress") {
+          setProgress({ chunk: event.chunk, of: event.of });
+          return;
+        }
+        const { type: _type, ...data } = event;
+        setResult(data);
+        setContent("");
+        setUrl("");
+        setTitle("");
+        setFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        router.refresh();
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ingest failed");
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -132,7 +146,9 @@ export default function AddSource({ wikiId }: { wikiId: string }) {
         </button>
         {busy && (
           <span className="text-sm text-faint">
-            The AI is reading and weaving this into your wiki…
+            {progress && progress.of > 1
+              ? `Reading part ${progress.chunk} of ${progress.of}…`
+              : "The AI is reading and weaving this into your wiki…"}
           </span>
         )}
       </div>

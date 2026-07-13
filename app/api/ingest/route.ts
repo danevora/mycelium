@@ -18,11 +18,13 @@ import {
 } from "@/lib/safety";
 import { extractTextFromUpload, MAX_UPLOAD_BYTES } from "@/lib/extract";
 import { consumeIngestQuota, quotaError } from "@/lib/usage";
+import { ndjsonResponse } from "@/lib/ndjson";
 
 export const runtime = "nodejs";
-// AI ingest (generateObject) routinely exceeds the 10s Hobby default on real
-// sources. Requires Vercel Pro for the full window.
-export const maxDuration = 60;
+// A chunked ingest runs one model call per chunk, sequentially, so a long
+// document can take minutes. 300s is the fluid-compute default and the Hobby
+// ceiling; Pro can go to 800s if MAX_CHUNKS ever outgrows this.
+export const maxDuration = 300;
 
 type Body = { wikiId: string } & (
   | { type: "text"; title?: string; content: string }
@@ -137,12 +139,6 @@ async function runIngest(
       { status: 413 },
     );
 
-  // Consume quota only once we have real work to do, just before the paid AI call.
-  // The whole document (single-shot OR multi-chunk) counts as ONE ingest unit.
-  const quota = await consumeIngestQuota(userId, await isProUser());
-  if (!quota.allowed)
-    return NextResponse.json({ error: quotaError("ingest", quota) }, { status: 429 });
-
   // Short content stays on the fast single-shot path (no behavior change).
   // Long content is split and ingested chunk-by-chunk, each chunk seeing the
   // running index.md so pages accumulate across chunks.
@@ -157,56 +153,73 @@ async function runIngest(
       { status: 413 },
     );
 
-  const created = new Set<string>();
-  const updated = new Set<string>();
-  let lastSummary = "";
+  // Consume quota only once we have real work to do, just before the paid AI call —
+  // after every rejection above, so a doomed request is never charged. The whole
+  // document (single-shot OR multi-chunk) counts as ONE ingest unit.
+  const quota = await consumeIngestQuota(userId, await isProUser());
+  if (!quota.allowed)
+    return NextResponse.json({ error: quotaError("ingest", quota) }, { status: 429 });
 
-  for (let i = 0; i < chunks.length; i++) {
-    // Re-read index.md before each chunk so later chunks see pages created by
-    // earlier ones (the bible accumulates across the document).
-    const indexPage = await getIndexPage(wiki.id);
-    const chunkTitle =
-      chunks.length > 1 ? `${source.title} (part ${i + 1}/${chunks.length})` : source.title;
-    const result = await ingestSource({
-      title: chunkTitle,
-      content: chunks[i],
-      schema: wiki.schema,
-      indexMd: indexPage?.content ?? "",
+  // Past this point the status is committed: a chunked ingest can run for minutes,
+  // so we stream per-chunk progress rather than leave the client on a dead spinner.
+  return ndjsonResponse(async (send) => {
+    const created = new Set<string>();
+    const updated = new Set<string>();
+    let lastSummary = "";
+
+    for (let i = 0; i < chunks.length; i++) {
+      // Announce the chunk before working it, so the client counts what's in
+      // flight rather than what already finished. Also keeps the connection
+      // warm: Vercel's docs warn that idle HTTP/1.1 requests can be dropped.
+      send({ type: "progress", chunk: i + 1, of: chunks.length });
+
+      // Re-read index.md before each chunk so later chunks see pages created by
+      // earlier ones (the bible accumulates across the document).
+      const indexPage = await getIndexPage(wiki.id);
+      const chunkTitle =
+        chunks.length > 1 ? `${source.title} (part ${i + 1}/${chunks.length})` : source.title;
+      const result = await ingestSource({
+        title: chunkTitle,
+        content: chunks[i],
+        schema: wiki.schema,
+        indexMd: indexPage?.content ?? "",
+      });
+      lastSummary = result.summary;
+      const applied = await applyPageOperations(wiki.id, result.operations);
+      for (const s of applied.created) {
+        // A slug created in an earlier chunk then re-touched later is an update.
+        if (updated.has(s) || created.has(s)) updated.add(s);
+        else created.add(s);
+      }
+      for (const s of applied.updated) {
+        created.delete(s);
+        updated.add(s);
+      }
+    }
+
+    const createdArr = [...created];
+    const updatedArr = [...updated];
+
+    // One source row for the whole document (raw_content sensibly capped).
+    await createSource({
+      wikiId: wiki.id,
+      type: source.type,
+      title: source.title,
+      rawContent: source.content.slice(0, MAX_SOURCE_CHARS),
+      touchedSlugs: [...createdArr, ...updatedArr],
     });
-    lastSummary = result.summary;
-    const applied = await applyPageOperations(wiki.id, result.operations);
-    for (const s of applied.created) {
-      // A slug created in an earlier chunk then re-touched later is an update.
-      if (updated.has(s) || created.has(s)) updated.add(s);
-      else created.add(s);
-    }
-    for (const s of applied.updated) {
-      created.delete(s);
-      updated.add(s);
-    }
-  }
 
-  const createdArr = [...created];
-  const updatedArr = [...updated];
+    const summary =
+      chunks.length > 1
+        ? `Ingested ${chunks.length} chunks: ${createdArr.length} pages created, ${updatedArr.length} updated`
+        : lastSummary;
 
-  // One source row for the whole document (raw_content sensibly capped).
-  await createSource({
-    wikiId: wiki.id,
-    type: source.type,
-    title: source.title,
-    rawContent: source.content.slice(0, MAX_SOURCE_CHARS),
-    touchedSlugs: [...createdArr, ...updatedArr],
-  });
-
-  const summary =
-    chunks.length > 1
-      ? `Ingested ${chunks.length} chunks: ${createdArr.length} pages created, ${updatedArr.length} updated`
-      : lastSummary;
-
-  return NextResponse.json({
-    summary,
-    created: createdArr,
-    updated: updatedArr,
-    touchedSlugs: [...new Set([...createdArr, ...updatedArr])],
+    send({
+      type: "done",
+      summary,
+      created: createdArr,
+      updated: updatedArr,
+      touchedSlugs: [...new Set([...createdArr, ...updatedArr])],
+    });
   });
 }
