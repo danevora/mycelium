@@ -6,8 +6,9 @@ import { isProUser } from "@/lib/billing";
 import { consumeConsistencyQuota, quotaError } from "@/lib/usage";
 
 export const runtime = "nodejs";
-// AI audit (generateObject over many pages) exceeds the 10s Hobby default.
-export const maxDuration = 60;
+// AI audit (generateObject over many pages) is slow. 300s is the fluid-compute
+// default and the Hobby ceiling; Pro can go to 800s if this ever needs it.
+export const maxDuration = 300;
 
 type Body = { wikiId?: string };
 
